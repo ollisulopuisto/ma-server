@@ -1,0 +1,29 @@
+---
+# Home Assistant local add-on for a fork build of Music Assistant.
+# Copy the folder holding this file into the /addons share on the Home Assistant machine and
+# reload the add-on store; it then appears under "Local add-ons".
+#
+# "version" is the tag of the image the Supervisor pulls, so it has to match the version the
+# Test build workflow was dispatched with. Bump both together on every rebuild, otherwise the
+# Supervisor keeps serving the image it already has.
+name: Music Assistant (Up Next test)
+version: 0.0.1.dev1
+slug: ma_upnext_test
+description: Throwaway Music Assistant build for testing the Pocket Casts Up Next playlist.
+url: https://github.com/ollisulopuisto/ma-server
+image: ghcr.io/ollisulopuisto/ma-server-test
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+# a test build should never come up on its own after a reboot
+boot: manual
+# player discovery needs mDNS and multicast, which only reach the container on the host
+# network. That also means this add-on claims port 8095, so the real Music Assistant add-on
+# has to be stopped while this one runs.
+host_network: true
+webui: http://[HOST]:8095
+map:
+  - media:rw
+  - share:rw

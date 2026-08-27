@@ -1,0 +1,132 @@
+---
+name: Test build
+
+# Builds a throwaway Music Assistant image from a branch of this fork and pushes it to this
+# fork's own GHCR namespace, so a change can be tried on a real Home Assistant box before it
+# goes anywhere near upstream. This workflow is fork-local scaffolding and is not meant to be
+# contributed back - the real release pipeline lives in release.yml and needs credentials a
+# fork does not have.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or commit SHA to build"
+        required: true
+        default: claude/pocket-casts-up-next-yax9xw
+        type: string
+      version:
+        description: "Version for the wheel and the image tag - bump this on every rebuild"
+        required: true
+        default: 0.0.1.dev1
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # must match the base image the Dockerfile of the built ref expects (see release.yml)
+  BASE_IMAGE_VERSION: "1.6.3"
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/ma-server-test
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # one architecture failing should not throw away the other, which may be the one needed
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Check out the ref to build
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version-file: .python-version
+
+      - name: Stamp the version into pyproject.toml
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          path = Path("pyproject.toml")
+          # the repo ships a 0.0.0 placeholder that the real release workflow rewrites too
+          text, count = re.subn(
+              r'(?m)^version = "0\.0\.0"$', f'version = "{version}"', path.read_text()
+          )
+          if count != 1:
+              raise SystemExit(f"expected 1 version placeholder in pyproject.toml, found {count}")
+          path.write_text(text)
+          PY
+
+      - name: Build the wheel the image installs
+        run: |
+          python -m pip install --upgrade build
+          python -m build --wheel --outdir dist
+          ls -l dist
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build and push the per-architecture image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          # attestations turn the tag into an index the Supervisor cannot resolve to an image
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE_NAME }}:${{ inputs.version }}-${{ matrix.arch }}
+          build-args: |
+            BASE_IMAGE_VERSION=${{ env.BASE_IMAGE_VERSION }}
+            MASS_VERSION=${{ inputs.version }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+  manifest:
+    name: Publish the multi-arch tag
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # the Home Assistant Supervisor pulls one tag and picks the architecture itself, so the
+      # two per-arch images are joined under the plain version tag the add-on config names
+      - name: Join the per-architecture images under one tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:${VERSION}" \
+            "${IMAGE_NAME}:${VERSION}-amd64" \
+            "${IMAGE_NAME}:${VERSION}-arm64"
+          docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}"
