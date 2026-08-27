@@ -62,7 +62,7 @@ UP_NEXT_PODCAST_ID = "up_next"
 # Music Assistant merges library items whose normalised names match, and there is a real
 # Pocket Casts show called "Up Next" - the queue has to carry a name no feed would use or it
 # disappears into that show's library entry instead of getting one of its own.
-UP_NEXT_PODCAST_NAME = "Pocket Casts Up Next"
+UP_NEXT_PODCAST_NAME = "Pocket Casts: Up Next"
 SPECIAL_FOLDERS = (UP_NEXT_PODCAST_ID, "new_releases", "in_progress", "starred", "history")
 
 SUPPORTED_FEATURES = {

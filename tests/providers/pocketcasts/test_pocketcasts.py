@@ -370,7 +370,7 @@ async def test_up_next_is_offered_as_a_podcast(
     assert [podcast.item_id for podcast in podcasts] == ["up_next", "podcast-1"]
     # a real Pocket Casts show is called "Up Next"; sharing that name would have the library
     # fold the queue into it instead of giving it a row of its own
-    assert podcasts[0].name == "Pocket Casts Up Next"
+    assert podcasts[0].name == "Pocket Casts: Up Next"
     assert await provider.get_podcast("up_next") == podcasts[0]
     client.get_podcast.assert_not_called()
 
