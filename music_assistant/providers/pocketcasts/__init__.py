@@ -515,6 +515,15 @@ class PocketCastsProvider(MusicProvider):
         if media_type != MediaType.PODCAST_EPISODE or not isinstance(media_item, PodcastEpisode):
             return
         podcast_uuid, episode_uuid = prov_item_id.split(":", 1)
+        # what reached Pocket Casts is otherwise invisible from this side, which makes a resume
+        # point that looks wrong in the app impossible to attribute without guessing
+        self.logger.debug(
+            "Reporting episode %s: position=%s, fully_played=%s, is_playing=%s",
+            episode_uuid,
+            position,
+            fully_played,
+            is_playing,
+        )
 
         # MA reports fully_played=True when an episode is skipped/stopped, not only when it
         # truly ends, so confirm completion against the real position before marking it played.
