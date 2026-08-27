@@ -27,6 +27,12 @@ permissions:
   contents: read
   packages: write
 
+# two runs would push the same tags and their manifest jobs would interleave, so a new run
+# waits for the one in flight rather than racing it
+concurrency:
+  group: test-build
+  cancel-in-progress: false
+
 env:
   # must match the base image the Dockerfile of the built ref expects (see release.yml)
   BASE_IMAGE_VERSION: "1.6.3"
@@ -56,7 +62,8 @@ jobs:
       - name: Resolve the version from the add-on config
         id: resolve
         run: |
-          version=$(sed -n 's/^version: *//p' "$ADDON_CONFIG" | head -1)
+          # tolerate the value being quoted or padded in the yaml; the tag must not carry it
+          version=$(sed -n 's/^version:[[:space:]]*//p' "$ADDON_CONFIG" | head -1 | tr -d "\"' \t\r")
           if [ -z "$version" ]; then
             echo "no version found in $ADDON_CONFIG" >&2
             exit 1
@@ -133,6 +140,9 @@ jobs:
   manifest:
     name: Publish the multi-arch tag
     needs: build
+    # the add-on config names the plain version tag, so it has to be published even when only
+    # one architecture built - otherwise a single failed arch leaves nothing installable
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Log in to GHCR
@@ -144,12 +154,27 @@ jobs:
 
       # the Home Assistant Supervisor pulls one tag and picks the architecture itself, so the
       # two per-arch images are joined under the plain version tag the add-on config names
-      - name: Join the per-architecture images under one tag
+      - name: Join whichever per-architecture images were published under one tag
         env:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          docker buildx imagetools create \
-            --tag "${IMAGE_NAME}:${VERSION}" \
-            "${IMAGE_NAME}:${VERSION}-amd64" \
-            "${IMAGE_NAME}:${VERSION}-arm64"
+          if [ -z "$VERSION" ]; then
+            echo "no version from the build job - every architecture failed before resolving it" >&2
+            exit 1
+          fi
+          sources=""
+          for arch in amd64 arm64; do
+            if docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}-${arch}" >/dev/null 2>&1
+            then
+              sources="$sources ${IMAGE_NAME}:${VERSION}-${arch}"
+            else
+              echo "::warning::no ${arch} image for ${VERSION}; the tag will not serve ${arch}"
+            fi
+          done
+          if [ -z "$sources" ]; then
+            echo "no architecture images were published for ${VERSION}" >&2
+            exit 1
+          fi
+          # shellcheck disable=SC2086
+          docker buildx imagetools create --tag "${IMAGE_NAME}:${VERSION}" $sources
           docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}"

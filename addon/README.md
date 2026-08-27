@@ -23,9 +23,10 @@ trigger instead.
 for the wheel version and the image tag, so the tag and the add-on version cannot drift apart.
 To rebuild, bump it and push.
 
-Both architectures build on native runners, so neither is emulated. If you only need one, the
-other failing is harmless: the per-architecture tag (`…-amd64` / `…-arm64`) is pushed either
-way, and only the combined tag needs both.
+Both architectures build on native runners, so neither is emulated. If only one succeeds the
+version tag is still published, carrying just that architecture — so a failed arch you do not
+run on costs you nothing. The run is still marked failed, which is deliberate: it should be
+obvious that one half did not build.
 
 ## 3. Make the package public
 
