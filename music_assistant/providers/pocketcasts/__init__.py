@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import (
@@ -28,6 +28,7 @@ from music_assistant_models.media_items import (
     MediaItemImage,
     MediaItemMetadata,
     MediaItemType,
+    Playlist,
     Podcast,
     PodcastEpisode,
     ProviderMapping,
@@ -37,7 +38,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant import MusicAssistant
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, PlaylistPlayableItem
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
@@ -55,13 +56,18 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 FULLY_PLAYED_THRESHOLD = 0.9
-SPECIAL_FOLDERS = ("up_next", "new_releases", "in_progress", "starred", "history")
+# Pocket Casts has exactly one queue, so its playlist id is fixed. It doubles as the id of the
+# browse folder listing the same queue.
+UP_NEXT_PLAYLIST_ID = "up_next"
+SPECIAL_FOLDERS = (UP_NEXT_PLAYLIST_ID, "new_releases", "in_progress", "starred", "history")
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
 }
 
 BROWSE_FOLDER_ICONS: dict[str, str] = {
@@ -262,6 +268,91 @@ class PocketCastsProvider(MusicProvider):
                     episode_item, episode_data, in_progress_map, history_map
                 )
                 yield episode_item
+
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
+        """Get the user's playlists - Pocket Casts offers only the Up Next queue."""
+        yield self._create_up_next_playlist()
+
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
+        """
+        Get full details for a playlist.
+
+        :param prov_playlist_id: The provider playlist id.
+        """
+        if prov_playlist_id != UP_NEXT_PLAYLIST_ID:
+            raise MediaNotFoundError(
+                f"playlist://{prov_playlist_id} not found on provider {self.domain}"
+            )
+        return self._create_up_next_playlist()
+
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, page: int = 0
+    ) -> Sequence[PlaylistPlayableItem]:
+        """
+        Get the episodes queued in Up Next, in queue order.
+
+        :param prov_playlist_id: The provider playlist id.
+        :param page: The page to fetch.
+        """
+        if prov_playlist_id != UP_NEXT_PLAYLIST_ID:
+            raise MediaNotFoundError(
+                f"playlist://{prov_playlist_id} not found on provider {self.domain}"
+            )
+        if page > 0:
+            # the queue is capped and returned in a single response, so there is no second page
+            return []
+        episodes = await self._convert_mixed_episodes(await self._client.get_up_next_episodes())
+        for position, episode_item in enumerate(episodes):
+            episode_item.position = position
+        return episodes
+
+    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
+        """
+        Append episodes to the end of the Up Next queue.
+
+        :param prov_playlist_id: The provider playlist id.
+        :param prov_track_ids: The episode item ids (format: podcast_uuid:episode_uuid).
+        """
+        if prov_playlist_id != UP_NEXT_PLAYLIST_ID:
+            raise MediaNotFoundError(
+                f"playlist://{prov_playlist_id} not found on provider {self.domain}"
+            )
+        # queued one at a time so the episodes land in the order they were requested
+        for prov_track_id in prov_track_ids:
+            podcast_uuid, episode_uuid = prov_track_id.split(":", 1)
+            # the queue entry must carry the title and audio url, which only the episode
+            # endpoint has - the id alone is not enough for Pocket Casts to accept it
+            episode_data = await self._client.get_episode_details(episode_uuid)
+            await self._client.play_last(
+                episode_uuid=episode_uuid,
+                podcast_uuid=podcast_uuid,
+                title=episode_data.get("title", ""),
+                url=episode_data.get("url", ""),
+                published=episode_data.get("published"),
+            )
+
+    async def remove_playlist_tracks(
+        self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
+    ) -> None:
+        """
+        Remove episodes from the Up Next queue.
+
+        :param prov_playlist_id: The provider playlist id.
+        :param positions_to_remove: The queue positions to remove.
+        """
+        if prov_playlist_id != UP_NEXT_PLAYLIST_ID:
+            raise MediaNotFoundError(
+                f"playlist://{prov_playlist_id} not found on provider {self.domain}"
+            )
+        # the queue reorders itself as episodes are played elsewhere, so resolve the positions
+        # against a fresh listing instead of removing whatever sits at that index now
+        episode_list = await self._client.get_up_next_episodes()
+        uuids = [
+            uuid
+            for position, episode_data in enumerate(episode_list)
+            if position in positions_to_remove and (uuid := episode_data.get("uuid"))
+        ]
+        await self._client.remove_from_up_next(*uuids)
 
     async def browse(self, path: str) -> list[MediaItemType | BrowseFolder]:
         """
@@ -604,10 +695,25 @@ class PocketCastsProvider(MusicProvider):
         # never on mere history membership. Both fields are always set so the library sync can
         # clear a stale completed/resume value (it only updates when both are non-None).
         status_data = in_progress_map.get(episode_uuid) or history_map.get(episode_uuid) or {}
+        self._apply_playback_status(episode_item, status_data, episode_data.get("duration") or 0)
+
+    def _apply_playback_status(
+        self,
+        episode_item: PodcastEpisode,
+        status_data: dict[str, Any],
+        fallback_duration: int = 0,
+    ) -> None:
+        """
+        Apply a raw playback status payload to a PodcastEpisode.
+
+        :param episode_item: The episode object to enrich in place.
+        :param status_data: Raw data carrying playedUpTo/duration/playingStatus, if any.
+        :param fallback_duration: Duration to fall back on when the status carries none.
+        """
         # feeds that omit a duration yield an explicit null rather than a missing key, so
         # coerce instead of relying on a dict default
         played_up_to = status_data.get("playedUpTo") or 0
-        duration = status_data.get("duration") or episode_data.get("duration") or 0
+        duration = status_data.get("duration") or fallback_duration
         completed = status_data.get("playingStatus") == 3 or (
             duration > 0 and (played_up_to / duration) > FULLY_PLAYED_THRESHOLD
         )
@@ -623,14 +729,22 @@ class PocketCastsProvider(MusicProvider):
         :param folder_name: Name of the special folder (up_next, new_releases, etc.)
         """
         folder_getters = {
-            "up_next": self._client.get_up_next_episodes,
+            UP_NEXT_PLAYLIST_ID: self._client.get_up_next_episodes,
             "new_releases": self._client.get_new_releases,
             "in_progress": self._client.get_in_progress_episodes,
             "starred": self._client.get_starred_episodes,
             "history": self._client.get_history,
         }
-        episode_list = await folder_getters[folder_name]()
+        return list(await self._convert_mixed_episodes(await folder_getters[folder_name]()))
 
+    async def _convert_mixed_episodes(
+        self, episode_list: list[dict[str, Any]]
+    ) -> list[PodcastEpisode]:
+        """
+        Convert a listing that mixes episodes from several podcasts, preserving its order.
+
+        :param episode_list: Raw episode payloads from a queue/history style endpoint.
+        """
         # (episode, podcast uuid, podcast name) per episode, the name empty when the folder
         # payload does not carry it
         resolved: list[tuple[dict[str, Any], str, str]] = []
@@ -664,7 +778,7 @@ class PocketCastsProvider(MusicProvider):
         looked_up = await asyncio.gather(*(self._get_podcast_name(uuid) for uuid in missing))
         names = dict(zip(missing, looked_up, strict=True))
 
-        items: list[MediaItemType | BrowseFolder] = []
+        items: list[PodcastEpisode] = []
         for episode_data, podcast_uuid, podcast_name in resolved:
             if episode_item := self._convert_episode(
                 episode_data,
@@ -672,13 +786,15 @@ class PocketCastsProvider(MusicProvider):
                 show_notes=None,
                 podcast_name=podcast_name or names.get(podcast_uuid, ""),
             ):
+                # these endpoints carry the playback status inline, so no extra lookup is needed
+                self._apply_playback_status(episode_item, episode_data, episode_item.duration or 0)
                 items.append(episode_item)
         return items
 
     def _create_browse_folders(self) -> list[BrowseFolder]:
         """Create special browse folders for root level."""
         folders = [
-            ("up_next", "Up Next"),
+            (UP_NEXT_PLAYLIST_ID, "Up Next"),
             ("new_releases", "New Releases"),
             ("in_progress", "In Progress"),
             ("starred", "Starred"),
@@ -699,6 +815,37 @@ class PocketCastsProvider(MusicProvider):
             )
             for folder_id, name in folders
         ]
+
+    def _create_up_next_playlist(self) -> Playlist:
+        """Return the Up Next queue as a playlist - Pocket Casts has exactly one."""
+        return Playlist(
+            item_id=UP_NEXT_PLAYLIST_ID,
+            provider=self.instance_id,
+            name="Up Next",
+            translation_key=UP_NEXT_PLAYLIST_ID,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=UP_NEXT_PLAYLIST_ID,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+            supported_mediatypes={MediaType.PODCAST_EPISODE},
+            is_editable=True,
+            owner=self.name,
+            metadata=MediaItemMetadata(
+                images=UniqueList(
+                    [
+                        MediaItemImage(
+                            type=ImageType.THUMB,
+                            path=BROWSE_FOLDER_ICONS[UP_NEXT_PLAYLIST_ID],
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    ]
+                ),
+            ),
+        )
 
     async def _announce_playback_start(
         self, podcast_uuid: str, episode_uuid: str, episode: PodcastEpisode

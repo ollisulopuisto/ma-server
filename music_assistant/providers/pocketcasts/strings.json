@@ -8,5 +8,12 @@
       "label": "[%key:common::config_entries::password::label%]",
       "description": "Your Pocket Casts password"
     }
+  },
+  "media": {
+    "playlist": {
+      "up_next": {
+        "name": "Up Next"
+      }
+    }
   }
 }

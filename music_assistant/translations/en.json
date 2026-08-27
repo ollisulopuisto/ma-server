@@ -1997,6 +1997,7 @@
   "provider.plex_connect.setup_flow.user.title": "Choose what to expose to Plex",
   "provider.pocketcasts.config_entries.password.description": "Your Pocket Casts password",
   "provider.pocketcasts.config_entries.username.description": "Your Pocket Casts email address",
+  "provider.pocketcasts.media.playlist.up_next.name": "Up Next",
   "provider.podcast_index.config_entries.api_key.description": "Your Podcast Index API key. Get your free API credentials at https://api.podcastindex.org/",
   "provider.podcast_index.config_entries.api_key.label": "API Key",
   "provider.podcast_index.config_entries.api_secret.description": "Your Podcast Index API secret",

@@ -136,12 +136,19 @@ class PocketCastsClient:
         return episodes
 
     async def get_up_next_episodes(self) -> list[dict[str, Any]]:
-        """Return the Up Next queue episodes."""
-        data = await self._request("POST", f"{API_BASE_URL}/up_next/list")
+        """Return the Up Next queue episodes, in queue order."""
+        # showPlayStatus asks the server to include playingStatus/playedUpTo per episode, which
+        # saves a separate in-progress lookup when resolving resume points for the queue.
+        data = await self._request(
+            "POST",
+            f"{API_BASE_URL}/up_next/list",
+            json={"version": 2, "model": "webplayer", "serverModified": 0, "showPlayStatus": True},
+        )
         episodes = data.get("episodes", [])
         # the up_next endpoint returns a uuid-keyed map; normalise to a list carrying the uuid
         if isinstance(episodes, dict):
-            return [{"uuid": uuid, **episode} for uuid, episode in episodes.items()]
+            episodes = [{"uuid": uuid, **episode} for uuid, episode in episodes.items()]
+        self.logger.debug("Retrieved %d Up Next episodes", len(episodes))
         return cast("list[dict[str, Any]]", episodes)
 
     async def get_new_releases(self) -> list[dict[str, Any]]:
@@ -268,16 +275,18 @@ class PocketCastsClient:
             },
         )
 
-    async def remove_from_up_next(self, episode_uuid: str) -> None:
+    async def remove_from_up_next(self, *episode_uuids: str) -> None:
         """
-        Remove an episode from the Up Next queue.
+        Remove one or more episodes from the Up Next queue.
 
-        :param episode_uuid: The episode UUID to remove.
+        :param episode_uuids: The episode UUIDs to remove.
         """
+        if not episode_uuids:
+            return
         await self._request(
             "POST",
             f"{API_BASE_URL}/up_next/remove",
-            json={"version": 2, "uuids": [episode_uuid]},
+            json={"version": 2, "uuids": list(episode_uuids)},
         )
 
     async def play_now(
@@ -297,17 +306,26 @@ class PocketCastsClient:
         :param url: The episode audio URL.
         :param published: The episode publish date (ISO format), optional.
         """
-        episode: dict[str, Any] = {
-            "uuid": episode_uuid,
-            "podcast": podcast_uuid,
-            "title": title,
-            "url": url,
-        }
-        if published:
-            episode["published"] = published
-        await self._request(
-            "POST", f"{API_BASE_URL}/up_next/play_now", json={"version": 2, "episode": episode}
-        )
+        await self._queue_episode("play_now", episode_uuid, podcast_uuid, title, url, published)
+
+    async def play_last(
+        self,
+        episode_uuid: str,
+        podcast_uuid: str,
+        title: str,
+        url: str,
+        published: str | None = None,
+    ) -> None:
+        """
+        Append an episode to the end of the Up Next queue.
+
+        :param episode_uuid: The episode UUID.
+        :param podcast_uuid: The podcast UUID.
+        :param title: The episode title.
+        :param url: The episode audio URL.
+        :param published: The episode publish date (ISO format), optional.
+        """
+        await self._queue_episode("play_last", episode_uuid, podcast_uuid, title, url, published)
 
     async def add_to_history(
         self,
@@ -355,6 +373,30 @@ class PocketCastsClient:
         """
         await self._request(
             "POST", f"{API_BASE_URL}/user/podcast/unsubscribe", json={"uuid": podcast_uuid}
+        )
+
+    async def _queue_episode(
+        self,
+        action: str,
+        episode_uuid: str,
+        podcast_uuid: str,
+        title: str,
+        url: str,
+        published: str | None = None,
+    ) -> None:
+        """Place an episode in the Up Next queue via the given up_next action."""
+        # Pocket Casts stores the queue as full entries rather than references, so a uuid on its
+        # own is rejected - the title and audio url have to travel with it.
+        episode: dict[str, Any] = {
+            "uuid": episode_uuid,
+            "podcast": podcast_uuid,
+            "title": title,
+            "url": url,
+        }
+        if published:
+            episode["published"] = published
+        await self._request(
+            "POST", f"{API_BASE_URL}/up_next/{action}", json={"version": 2, "episode": episode}
         )
 
     def _headers(self) -> dict[str, str]:
