@@ -798,18 +798,8 @@ class PocketCastsProvider(MusicProvider):
                     provider_instance=self.instance_id,
                 )
             },
-            metadata=MediaItemMetadata(
-                images=UniqueList(
-                    [
-                        MediaItemImage(
-                            type=ImageType.THUMB,
-                            path=BROWSE_FOLDER_ICONS[UP_NEXT_PODCAST_ID],
-                            provider=self.instance_id,
-                            remotely_accessible=True,
-                        )
-                    ]
-                ),
-            ),
+            # deliberately no artwork: the queue has none of its own, and an item without
+            # images falls back to the provider's icon, which is the Pocket Casts mark
         )
 
     async def _announce_playback_start(

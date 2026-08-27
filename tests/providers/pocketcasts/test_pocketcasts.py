@@ -400,6 +400,13 @@ async def test_up_next_is_offered_as_a_podcast(
     client.get_podcast.assert_not_called()
 
 
+async def test_the_queue_wears_the_provider_icon(provider: PocketCastsProvider) -> None:
+    """The queue has no artwork of its own, so it must not carry any: bare falls back."""
+    up_next = await provider.get_podcast("up_next")
+
+    assert not up_next.metadata.images
+
+
 async def test_the_queue_is_not_a_subscription(
     provider: PocketCastsProvider, client: AsyncMock
 ) -> None:
