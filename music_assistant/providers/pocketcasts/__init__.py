@@ -59,6 +59,10 @@ FULLY_PLAYED_THRESHOLD = 0.9
 # with the rest of the listening rather than among music playlists. The id is fixed and
 # doubles as the id of the browse folder listing the same queue.
 UP_NEXT_PODCAST_ID = "up_next"
+# Music Assistant merges library items whose normalised names match, and there is a real
+# Pocket Casts show called "Up Next" - the queue has to carry a name no feed would use or it
+# disappears into that show's library entry instead of getting one of its own.
+UP_NEXT_PODCAST_NAME = "Pocket Casts Up Next"
 SPECIAL_FOLDERS = (UP_NEXT_PODCAST_ID, "new_releases", "in_progress", "starred", "history")
 
 SUPPORTED_FEATURES = {
@@ -762,8 +766,7 @@ class PocketCastsProvider(MusicProvider):
         return Podcast(
             item_id=UP_NEXT_PODCAST_ID,
             provider=self.instance_id,
-            name="Up Next",
-            translation_key=UP_NEXT_PODCAST_ID,
+            name=UP_NEXT_PODCAST_NAME,
             publisher="Pocket Casts",
             provider_mappings={
                 ProviderMapping(
