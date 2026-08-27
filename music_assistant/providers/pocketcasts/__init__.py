@@ -267,8 +267,8 @@ class PocketCastsProvider(MusicProvider):
         # fetch episode metadata, user status and show notes in parallel
         (podcast_name, episodes), in_progress, history, show_notes = await asyncio.gather(
             self._client.get_podcast_episodes(prov_podcast_id),
-            self._client.get_in_progress_episodes(),
-            self._client.get_history(),
+            self._cached_in_progress_episodes(),
+            self._cached_history(),
             self._get_show_notes(prov_podcast_id),
         )
         in_progress_map = {ep.get("uuid"): ep for ep in in_progress}
@@ -552,6 +552,21 @@ class PocketCastsProvider(MusicProvider):
     async def _fetch_show_notes(self, prov_podcast_id: str) -> dict[str, dict[str, Any]]:
         """Return show notes per episode uuid for the given podcast."""
         return await self._client.get_show_notes(prov_podcast_id)
+
+    # both of these are account-wide rather than per-podcast, so enriching a listing re-asks
+    # for the same answer once per podcast - hundreds of identical calls across a library sync,
+    # which the client then has to pace. The short lifetime keeps a listing's playback status
+    # close to live; get_resume_position deliberately does not come through here, so pressing
+    # play still reads the account's current position rather than a cached one.
+    @use_cache(300)
+    async def _cached_in_progress_episodes(self) -> list[dict[str, Any]]:
+        """Return the account's in-progress episodes, reused across a listing pass."""
+        return await self._client.get_in_progress_episodes()
+
+    @use_cache(300)
+    async def _cached_history(self) -> list[dict[str, Any]]:
+        """Return the account's listening history, reused across a listing pass."""
+        return await self._client.get_history()
 
     def _convert_episode(
         self,

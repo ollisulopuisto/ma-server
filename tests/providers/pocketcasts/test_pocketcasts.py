@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -40,6 +41,30 @@ def provider(client: AsyncMock) -> PocketCastsProvider:
     # handle_async_init would set this up; it is skipped here since it also logs in
     prov._announced_episodes = set()
     return prov
+
+
+class _FakeCache:
+    """A cache that actually remembers, so a caching test sees a second call hit."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, Any] = {}
+
+    async def get_with_freshness(self, key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
+        """Return the stored value, always fresh, or a miss."""
+        if key in self.store:
+            return (self.store[key], True, True)
+        return (None, False, False)
+
+    async def set(self, key: str, data: Any, **kwargs: Any) -> None:
+        """Remember a value under its key."""
+        self.store[key] = data
+
+
+@pytest.fixture
+def caching_provider(provider: PocketCastsProvider) -> PocketCastsProvider:
+    """Return the provider with a cache that stores, rather than one that always misses."""
+    provider.mass.cache = _FakeCache()  # type: ignore[assignment]
+    return provider
 
 
 def _feed_episode(**overrides: Any) -> dict[str, Any]:
@@ -491,3 +516,45 @@ async def test_stopping_early_leaves_the_episode_queued(
     client.remove_from_up_next.assert_not_awaited()
     client.mark_episode_played.assert_not_awaited()
     client.update_episode_progress.assert_awaited_once_with("podcast-1", "episode-1", 200)
+
+
+async def test_account_wide_status_is_not_refetched_for_every_podcast(
+    caching_provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """The in-progress and history lists cover the whole account, so one pass needs them once."""
+    client.get_podcast_episodes.return_value = ("Podcast One", [_feed_episode()])
+    client.get_in_progress_episodes.return_value = []
+    client.get_history.return_value = []
+
+    for prov_podcast_id in ("podcast-1", "podcast-2", "podcast-3"):
+        async for _ in caching_provider.get_podcast_episodes(prov_podcast_id):
+            pass
+        # the decorator stores through a task, which has to run before the next lookup
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    assert client.get_podcast_episodes.call_count == 3
+    assert client.get_in_progress_episodes.call_count == 1
+    assert client.get_history.call_count == 1
+
+
+async def test_pressing_play_reads_the_live_resume_position(
+    caching_provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """A resume point must not come from the listing cache, or a handoff resumes stale."""
+    client.get_podcast_episodes.return_value = ("Podcast One", [_feed_episode()])
+    client.get_in_progress_episodes.return_value = []
+    client.get_history.return_value = []
+    async for _ in caching_provider.get_podcast_episodes("podcast-1"):
+        pass
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    client.get_in_progress_episodes.return_value = [
+        {"uuid": "episode-1", "playedUpTo": 120, "duration": 1800}
+    ]
+    fully_played, position_ms, _ = await caching_provider.get_resume_position(
+        "podcast-1:episode-1", MediaType.PODCAST_EPISODE
+    )
+
+    assert (fully_played, position_ms) == (False, 120000)
