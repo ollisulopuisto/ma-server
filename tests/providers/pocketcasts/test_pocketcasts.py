@@ -37,6 +37,8 @@ def provider(client: AsyncMock) -> PocketCastsProvider:
     config.get_value.return_value = None
     prov = PocketCastsProvider(mass, manifest, config)
     prov._client = client
+    # handle_async_init would set this up; it is skipped here since it also logs in
+    prov._announced_episodes = set()
     return prov
 
 
@@ -350,6 +352,15 @@ async def _up_next_tracks(provider: PocketCastsProvider) -> list[PodcastEpisode]
     return cast("list[PodcastEpisode]", tracks)
 
 
+def _episode_item(provider: PocketCastsProvider) -> PodcastEpisode:
+    """Build a PodcastEpisode the way the provider itself builds one, mappings included."""
+    episode = provider._convert_episode(
+        _up_next_episode(1), "podcast-1", podcast_name="Podcast One"
+    )
+    assert episode is not None
+    return episode
+
+
 async def test_up_next_is_offered_as_a_playlist(provider: PocketCastsProvider) -> None:
     """The Up Next queue shows up as a single editable playlist of podcast episodes."""
     playlists = [playlist async for playlist in provider.get_library_playlists()]
@@ -452,3 +463,63 @@ async def test_removing_nothing_leaves_the_queue_alone(
     await provider.remove_playlist_tracks("up_next", (5,))
 
     client.remove_from_up_next.assert_awaited_once_with()
+
+
+async def test_queue_entry_without_a_podcast_is_skipped(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """An entry naming no podcast cannot be turned into an item, and must not sink the rest."""
+    client.get_up_next_episodes.return_value = [
+        {"uuid": "episode-0", "title": "Orphan", "url": "https://example.com/ep0.mp3"},
+        _up_next_episode(1),
+    ]
+
+    tracks = await _up_next_tracks(provider)
+
+    assert [track.item_id for track in tracks] == ["podcast-1:episode-1"]
+    assert tracks[0].position == 0
+
+
+async def test_browse_folders_report_playback_status(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """The mixed folders carry playback status inline, so their episodes should show it."""
+    client.get_history.return_value = [
+        _up_next_episode(1, playedUpTo=600, playingStatus=2),
+        _up_next_episode(2, playingStatus=3),
+    ]
+
+    items = await provider.browse("pocketcasts://history")
+
+    episodes = [item for item in items if isinstance(item, PodcastEpisode)]
+    assert [episode.resume_position_ms for episode in episodes] == [600000, 0]
+    assert [episode.fully_played for episode in episodes] == [False, True]
+
+
+async def test_finishing_an_episode_clears_it_from_the_queue(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """A finished episode leaves Up Next, so the queue does not keep serving it back."""
+    episode = _episode_item(provider)
+
+    await provider.on_played(
+        MediaType.PODCAST_EPISODE, "podcast-1:episode-1", True, 990, episode, is_playing=False
+    )
+
+    client.mark_episode_played.assert_awaited_once_with("podcast-1", "episode-1")
+    client.remove_from_up_next.assert_awaited_once_with("episode-1")
+
+
+async def test_stopping_early_leaves_the_episode_queued(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """Stopping partway is not finishing, so the episode keeps its place in Up Next."""
+    episode = _episode_item(provider)
+
+    await provider.on_played(
+        MediaType.PODCAST_EPISODE, "podcast-1:episode-1", True, 200, episode, is_playing=False
+    )
+
+    client.remove_from_up_next.assert_not_awaited()
+    client.mark_episode_played.assert_not_awaited()
+    client.update_episode_progress.assert_awaited_once_with("podcast-1", "episode-1", 200)
