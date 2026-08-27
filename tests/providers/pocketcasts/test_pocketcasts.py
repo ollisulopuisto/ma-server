@@ -558,3 +558,42 @@ async def test_pressing_play_reads_the_live_resume_position(
     )
 
     assert (fully_played, position_ms) == (False, 120000)
+
+
+async def test_special_folder_episodes_carry_their_show_notes(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """An episode reached through a mixed folder describes itself, as a feed episode does."""
+    client.get_show_notes.return_value = {"episode-1": {"description": "What this one is about"}}
+    client.get_starred_episodes.return_value = [
+        {
+            "uuid": "episode-1",
+            "title": "Episode 1",
+            "url": "https://example.com/ep1.mp3",
+            "podcast": {"uuid": "podcast-1", "title": "Podcast One"},
+        }
+    ]
+
+    items = await provider.browse("pocketcasts://starred")
+
+    episodes = [item for item in items if isinstance(item, PodcastEpisode)]
+    assert [episode.metadata.description for episode in episodes] == ["What this one is about"]
+
+
+async def test_special_folder_reads_show_notes_once_per_podcast(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """Show notes come per podcast, so a folder deep in one podcast must not ask repeatedly."""
+    client.get_history.return_value = [
+        {
+            "uuid": f"episode-{index}",
+            "title": f"Episode {index}",
+            "url": f"https://example.com/ep{index}.mp3",
+            "podcast": {"uuid": "podcast-1", "title": "Podcast One"},
+        }
+        for index in (1, 2, 3)
+    ]
+
+    await provider.browse("pocketcasts://history")
+
+    assert client.get_show_notes.await_count == 1

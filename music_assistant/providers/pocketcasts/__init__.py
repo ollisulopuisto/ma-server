@@ -735,15 +735,23 @@ class PocketCastsProvider(MusicProvider):
         # every remaining name costs a full-podcast fetch, so look them up once per podcast and
         # all at once: serialising them would stall the browse for as long as the folder is deep
         missing = list({uuid for _, uuid, name in resolved if not name})
-        looked_up = await asyncio.gather(*(self._get_podcast_name(uuid) for uuid in missing))
+        # show notes are served per podcast rather than per episode, so one lookup covers every
+        # episode a podcast contributed to this folder. The fetch behind it is cached for a day
+        # and a library sync of the same podcast fills that cache, so this is usually free
+        notes_uuids = list({uuid for _, uuid, _ in resolved})
+        looked_up, fetched_notes = await asyncio.gather(
+            asyncio.gather(*(self._get_podcast_name(uuid) for uuid in missing)),
+            asyncio.gather(*(self._get_show_notes(uuid) for uuid in notes_uuids)),
+        )
         names = dict(zip(missing, looked_up, strict=True))
+        notes = dict(zip(notes_uuids, fetched_notes, strict=True))
 
         items: list[PodcastEpisode] = []
         for episode_data, podcast_uuid, podcast_name in resolved:
             if episode_item := self._convert_episode(
                 episode_data,
                 podcast_uuid,
-                show_notes=None,
+                show_notes=notes.get(podcast_uuid, {}).get(episode_data.get("uuid", "")),
                 podcast_name=podcast_name or names.get(podcast_uuid, ""),
             ):
                 # these endpoints carry the playback status inline, so no extra lookup is needed
