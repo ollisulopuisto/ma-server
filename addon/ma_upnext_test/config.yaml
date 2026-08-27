@@ -7,7 +7,7 @@
 # from this file, so the two cannot drift. To ship a rebuild, bump it here and push: the
 # Supervisor keeps serving the image it already has until the version changes.
 name: Music Assistant (Up Next test)
-version: 0.0.6
+version: 0.0.7
 slug: ma_upnext_test
 description: Throwaway Music Assistant build for testing the Pocket Casts Up Next playlist.
 url: https://github.com/ollisulopuisto/ma-server
