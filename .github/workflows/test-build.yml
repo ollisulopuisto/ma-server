@@ -6,19 +6,21 @@ name: Test build
 # goes anywhere near upstream. This workflow is fork-local scaffolding and is not meant to be
 # contributed back - the real release pipeline lives in release.yml and needs credentials a
 # fork does not have.
+#
+# It runs on a push to its own branch rather than on workflow_dispatch, because a dispatchable
+# workflow has to live on the repository's default branch and this one deliberately does not.
+# To rebuild, bump "version" in the add-on config and push: that file is the single source of
+# truth for the image tag, so the tag and the add-on version cannot drift apart.
 
 on:
+  push:
+    branches:
+      - claude/test-build-addon
   workflow_dispatch:
     inputs:
       ref:
         description: "Branch, tag or commit SHA to build"
-        required: true
-        default: claude/pocket-casts-up-next-yax9xw
-        type: string
-      version:
-        description: "Version for the wheel and the image tag - bump this on every rebuild"
-        required: true
-        default: 0.0.1.dev1
+        required: false
         type: string
 
 permissions:
@@ -29,11 +31,15 @@ env:
   # must match the base image the Dockerfile of the built ref expects (see release.yml)
   BASE_IMAGE_VERSION: "1.6.3"
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/ma-server-test
+  DEFAULT_REF: claude/pocket-casts-up-next-yax9xw
+  ADDON_CONFIG: addon/ma_upnext_test/config.yaml
 
 jobs:
   build:
     name: Build ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
     strategy:
       # one architecture failing should not throw away the other, which may be the one needed
       fail-fast: false
@@ -44,19 +50,35 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     steps:
+      - name: Check out this branch for the add-on config
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Resolve the version from the add-on config
+        id: resolve
+        run: |
+          version=$(sed -n 's/^version: *//p' "$ADDON_CONFIG" | head -1)
+          if [ -z "$version" ]; then
+            echo "no version found in $ADDON_CONFIG" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building version $version"
+
       - name: Check out the ref to build
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || env.DEFAULT_REF }}
+          path: source
 
       - name: Set up Python
         uses: actions/setup-python@v7.0.0
         with:
-          python-version-file: .python-version
+          python-version-file: source/.python-version
 
       - name: Stamp the version into pyproject.toml
+        working-directory: source
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.resolve.outputs.version }}
         run: |
           python - <<'PY'
           import os
@@ -75,6 +97,7 @@ jobs:
           PY
 
       - name: Build the wheel the image installs
+        working-directory: source
         run: |
           python -m pip install --upgrade build
           python -m build --wheel --outdir dist
@@ -93,17 +116,17 @@ jobs:
       - name: Build and push the per-architecture image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
-          context: .
-          file: Dockerfile
+          context: source
+          file: source/Dockerfile
           platforms: linux/${{ matrix.arch }}
           push: true
           # attestations turn the tag into an index the Supervisor cannot resolve to an image
           provenance: false
           sbom: false
-          tags: ${{ env.IMAGE_NAME }}:${{ inputs.version }}-${{ matrix.arch }}
+          tags: ${{ env.IMAGE_NAME }}:${{ steps.resolve.outputs.version }}-${{ matrix.arch }}
           build-args: |
             BASE_IMAGE_VERSION=${{ env.BASE_IMAGE_VERSION }}
-            MASS_VERSION=${{ inputs.version }}
+            MASS_VERSION=${{ steps.resolve.outputs.version }}
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
 
@@ -123,7 +146,7 @@ jobs:
       # two per-arch images are joined under the plain version tag the add-on config names
       - name: Join the per-architecture images under one tag
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           docker buildx imagetools create \
             --tag "${IMAGE_NAME}:${VERSION}" \

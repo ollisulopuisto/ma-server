@@ -15,13 +15,13 @@ Forks ship with Actions disabled. Go to **Settings → Actions → General** on
 
 ## 2. Build and publish the image
 
-**Actions → Test build → Run workflow**, choosing the `claude/test-build-addon` branch (that
-is where the workflow file lives). Leave the inputs alone for the first run:
+Any push to `claude/test-build-addon` builds and publishes. A dispatchable workflow has to sit
+on the repository's default branch, and this one deliberately does not, so a push is the
+trigger instead.
 
-| Input | Default | Notes |
-| --- | --- | --- |
-| `ref` | `claude/pocket-casts-up-next-yax9xw` | the branch whose code goes into the image |
-| `version` | `0.0.1.dev1` | wheel version and image tag — bump on every rebuild |
+`version` in `ma_upnext_test/config.yaml` is the single source of truth: the workflow reads it
+for the wheel version and the image tag, so the tag and the add-on version cannot drift apart.
+To rebuild, bump it and push.
 
 Both architectures build on native runners, so neither is emulated. If you only need one, the
 other failing is harmless: the per-architecture tag (`…-amd64` / `…-arm64`) is pushed either
