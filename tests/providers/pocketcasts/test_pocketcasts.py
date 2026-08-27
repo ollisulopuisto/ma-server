@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError, RetriesExhausted
+from music_assistant_models.errors import RetriesExhausted
 from music_assistant_models.media_items import PodcastEpisode
 
 from music_assistant.providers.pocketcasts import PocketCastsProvider
@@ -345,11 +345,9 @@ def _up_next_episode(index: int, **overrides: Any) -> dict[str, Any]:
     }
 
 
-async def _up_next_tracks(provider: PocketCastsProvider) -> list[PodcastEpisode]:
-    """Return the Up Next playlist tracks, which are always podcast episodes."""
-    tracks = await provider.get_playlist_tracks("up_next")
-    assert all(isinstance(track, PodcastEpisode) for track in tracks)
-    return cast("list[PodcastEpisode]", tracks)
+async def _up_next_episodes(provider: PocketCastsProvider) -> list[PodcastEpisode]:
+    """Return the episodes the Up Next queue podcast offers."""
+    return [episode async for episode in provider.get_podcast_episodes("up_next")]
 
 
 def _episode_item(provider: PocketCastsProvider) -> PodcastEpisode:
@@ -361,42 +359,62 @@ def _episode_item(provider: PocketCastsProvider) -> PodcastEpisode:
     return episode
 
 
-async def test_up_next_is_offered_as_a_playlist(provider: PocketCastsProvider) -> None:
-    """The Up Next queue shows up as a single editable playlist of podcast episodes."""
-    playlists = [playlist async for playlist in provider.get_library_playlists()]
-
-    assert len(playlists) == 1
-    assert playlists[0].item_id == "up_next"
-    assert playlists[0].is_editable is True
-    assert playlists[0].supported_mediatypes == {MediaType.PODCAST_EPISODE}
-    assert await provider.get_playlist("up_next") == playlists[0]
-
-
-async def test_unknown_playlist_is_not_found(provider: PocketCastsProvider) -> None:
-    """Pocket Casts has only the one queue, so any other playlist id is unknown."""
-    with pytest.raises(MediaNotFoundError):
-        await provider.get_playlist("some-other-list")
-    with pytest.raises(MediaNotFoundError):
-        await provider.get_playlist_tracks("some-other-list")
-
-
-async def test_up_next_tracks_keep_the_queue_order(
+async def test_up_next_is_offered_as_a_podcast(
     provider: PocketCastsProvider, client: AsyncMock
 ) -> None:
-    """The queue order is the playlist order, and is reported through the item positions."""
+    """The queue sits with the podcasts rather than among music playlists."""
+    client.get_subscribed_podcasts.return_value = [{"uuid": "podcast-1", "title": "Podcast One"}]
+
+    podcasts = [podcast async for podcast in provider.get_library_podcasts()]
+
+    assert [podcast.item_id for podcast in podcasts] == ["up_next", "podcast-1"]
+    assert podcasts[0].name == "Up Next"
+    assert await provider.get_podcast("up_next") == podcasts[0]
+    client.get_podcast.assert_not_called()
+
+
+async def test_the_queue_is_not_a_subscription(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """Pocket Casts has no podcast behind the queue's id, so it must not be (un)subscribed."""
+    up_next = await provider.get_podcast("up_next")
+
+    assert await provider.library_add(up_next) is True
+    assert await provider.library_remove("up_next", MediaType.PODCAST) is True
+
+    client.subscribe_podcast.assert_not_called()
+    client.unsubscribe_podcast.assert_not_called()
+
+
+async def test_up_next_episodes_keep_the_queue_order(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """The queue order is the episode order, and is reported through the item positions."""
     client.get_up_next_episodes.return_value = [_up_next_episode(index) for index in (3, 1, 2)]
 
-    tracks = await _up_next_tracks(provider)
+    episodes = await _up_next_episodes(provider)
 
-    assert [track.item_id for track in tracks] == [
+    assert [episode.item_id for episode in episodes] == [
         "podcast-1:episode-3",
         "podcast-1:episode-1",
         "podcast-1:episode-2",
     ]
-    assert [track.position for track in tracks] == [0, 1, 2]
+    assert [episode.position for episode in episodes] == [0, 1, 2]
 
 
-async def test_up_next_tracks_carry_their_resume_point(
+async def test_up_next_episodes_name_the_show_they_came_from(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """The queue mixes shows, so each episode has to say which one it belongs to."""
+    client.get_up_next_episodes.return_value = [_up_next_episode(1)]
+
+    episodes = await _up_next_episodes(provider)
+
+    assert episodes[0].podcast.name == "Podcast One"
+    assert episodes[0].podcast.item_id == "podcast-1"
+
+
+async def test_up_next_episodes_carry_their_resume_point(
     provider: PocketCastsProvider, client: AsyncMock
 ) -> None:
     """A queued episode already part-listened resumes where it was left off."""
@@ -405,64 +423,11 @@ async def test_up_next_tracks_carry_their_resume_point(
         _up_next_episode(2),
     ]
 
-    tracks = await _up_next_tracks(provider)
+    episodes = await _up_next_episodes(provider)
 
-    assert tracks[0].resume_position_ms == 300000
-    assert tracks[0].fully_played is False
-    assert tracks[1].resume_position_ms == 0
-
-
-async def test_up_next_has_no_second_page(provider: PocketCastsProvider, client: AsyncMock) -> None:
-    """The whole queue arrives in one response, so paging past it stops the listing."""
-    client.get_up_next_episodes.return_value = [_up_next_episode(1)]
-
-    assert await provider.get_playlist_tracks("up_next", page=1) == []
-
-
-async def test_adding_episodes_appends_them_in_order(
-    provider: PocketCastsProvider, client: AsyncMock
-) -> None:
-    """Added episodes are appended to the end of the queue, in the requested order."""
-    client.get_episode_details.side_effect = lambda uuid: {
-        "uuid": uuid,
-        "title": f"Title {uuid}",
-        "url": f"https://example.com/{uuid}.mp3",
-        "published": "2026-01-01T00:00:00Z",
-    }
-
-    await provider.add_playlist_tracks("up_next", ["podcast-1:episode-1", "podcast-2:episode-2"])
-
-    assert [call.kwargs["episode_uuid"] for call in client.play_last.await_args_list] == [
-        "episode-1",
-        "episode-2",
-    ]
-    first_call = client.play_last.await_args_list[0].kwargs
-    assert first_call["podcast_uuid"] == "podcast-1"
-    assert first_call["title"] == "Title episode-1"
-    assert first_call["url"] == "https://example.com/episode-1.mp3"
-    client.play_now.assert_not_called()
-
-
-async def test_removing_resolves_positions_against_the_live_queue(
-    provider: PocketCastsProvider, client: AsyncMock
-) -> None:
-    """Positions are resolved against a fresh listing, since the queue moves on its own."""
-    client.get_up_next_episodes.return_value = [_up_next_episode(index) for index in (1, 2, 3)]
-
-    await provider.remove_playlist_tracks("up_next", (0, 2))
-
-    client.remove_from_up_next.assert_awaited_once_with("episode-1", "episode-3")
-
-
-async def test_removing_nothing_leaves_the_queue_alone(
-    provider: PocketCastsProvider, client: AsyncMock
-) -> None:
-    """Positions that no longer exist must not remove some other episode in their place."""
-    client.get_up_next_episodes.return_value = [_up_next_episode(1)]
-
-    await provider.remove_playlist_tracks("up_next", (5,))
-
-    client.remove_from_up_next.assert_awaited_once_with()
+    assert episodes[0].resume_position_ms == 300000
+    assert episodes[0].fully_played is False
+    assert episodes[1].resume_position_ms == 0
 
 
 async def test_queue_entry_without_a_podcast_is_skipped(
@@ -474,10 +439,10 @@ async def test_queue_entry_without_a_podcast_is_skipped(
         _up_next_episode(1),
     ]
 
-    tracks = await _up_next_tracks(provider)
+    episodes = await _up_next_episodes(provider)
 
-    assert [track.item_id for track in tracks] == ["podcast-1:episode-1"]
-    assert tracks[0].position == 0
+    assert [episode.item_id for episode in episodes] == ["podcast-1:episode-1"]
+    assert episodes[0].position == 0
 
 
 async def test_browse_folders_report_playback_status(
@@ -508,6 +473,7 @@ async def test_finishing_an_episode_clears_it_from_the_queue(
 
     client.mark_episode_played.assert_awaited_once_with("podcast-1", "episode-1")
     client.remove_from_up_next.assert_awaited_once_with("episode-1")
+    client.archive_episode.assert_awaited_once_with("podcast-1", "episode-1", archive=True)
 
 
 async def test_stopping_early_leaves_the_episode_queued(
