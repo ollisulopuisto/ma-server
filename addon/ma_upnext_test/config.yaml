@@ -3,9 +3,9 @@
 # Copy the folder holding this file into the /addons share on the Home Assistant machine and
 # reload the add-on store; it then appears under "Local add-ons".
 #
-# "version" is the tag of the image the Supervisor pulls, so it has to match the version the
-# Test build workflow was dispatched with. Bump both together on every rebuild, otherwise the
-# Supervisor keeps serving the image it already has.
+# "version" is the tag of the image the Supervisor pulls, and the Test build workflow reads it
+# from this file, so the two cannot drift. To ship a rebuild, bump it here and push: the
+# Supervisor keeps serving the image it already has until the version changes.
 name: Music Assistant (Up Next test)
 version: 0.0.1.dev1
 slug: ma_upnext_test
