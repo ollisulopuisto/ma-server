@@ -16,6 +16,9 @@ on:
   push:
     branches:
       - claude/test-build-addon
+    # a notes-only edit does not change the image, so it should not spend a build
+    paths-ignore:
+      - "**.md"
   workflow_dispatch:
     inputs:
       ref:

@@ -28,11 +28,13 @@ version tag is still published, carrying just that architecture — so a failed 
 run on costs you nothing. The run is still marked failed, which is deliberate: it should be
 obvious that one half did not build.
 
-## 3. Make the package public
+## 3. Check the package is public (it already is)
 
-The first push creates the GHCR package as **private**, and the Supervisor pulls without
-credentials. Open `https://github.com/users/ollisulopuisto/packages/container/ma-server-test/settings`
-and set the visibility to public, or the add-on install fails with a manifest error.
+The Supervisor pulls without credentials, so the GHCR package has to be publicly readable.
+The first build's package came out public and an anonymous pull of the manifest succeeds, so
+there is nothing to do here — this step is only worth revisiting if an install fails with a
+manifest or authorization error, in which case set the visibility at
+`https://github.com/users/ollisulopuisto/packages/container/ma-server-test/settings`.
 
 ## 4. Install the add-on
 
