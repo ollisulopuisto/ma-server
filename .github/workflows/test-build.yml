@@ -40,7 +40,9 @@ env:
   # must match the base image the Dockerfile of the built ref expects (see release.yml)
   BASE_IMAGE_VERSION: "1.6.3"
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/ma-server-test
-  DEFAULT_REF: claude/pocket-casts-up-next-yax9xw
+  # an integration branch merging the three open Pocket Casts PRs, so one add-on build
+  # exercises all of them together rather than only the one they were split out of
+  DEFAULT_REF: claude/pocketcasts-test-all
   ADDON_CONFIG: addon/ma_upnext_test/config.yaml
 
 jobs:
