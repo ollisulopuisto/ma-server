@@ -442,6 +442,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self,
             favorite: bool | None = None,
             search: str | None = None,
+            starts_from: str | None = None,
+            starts_before: str | None = None,
             limit: int = 500,
             offset: int = 0,
             order_by: str = "sort_name",
@@ -460,6 +462,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self,
             favorite: bool | None = None,
             search: str | None = None,
+            starts_from: str | None = None,
+            starts_before: str | None = None,
             limit: int = 500,
             offset: int = 0,
             order_by: str = "sort_name",
@@ -478,6 +482,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self,
             favorite: bool | None = None,
             search: str | None = None,
+            starts_from: str | None = None,
+            starts_before: str | None = None,
             limit: int = 500,
             offset: int = 0,
             order_by: str = "sort_name",
@@ -495,6 +501,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self,
         favorite: bool | None = None,
         search: str | None = None,
+        starts_from: str | None = None,
+        starts_before: str | None = None,
         limit: int = 500,
         offset: int = 0,
         order_by: str = "sort_name",
@@ -512,6 +520,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         :param favorite: Filter by favorite status.
         :param search: Filter by search query.
+        :param starts_from: Drop the items filed before this letter, leaving the listing
+            starting there and running on to the end - a jump into a long library rather
+            than a filter, so scrolling carries on into the letters after it. Compared
+            against whichever name the current ``order_by`` sorts on, so the item it starts
+            at is the one that really appears there: sorted by sort name, "The Beatles" is
+            filed under B, not T.
+        :param starts_before: Drop the items filed at or after this letter. The mirror of
+            ``starts_from``, for walking back up out of a jump: ask for it with the ordering
+            reversed and you get the items immediately before that letter, nearest first.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
@@ -536,6 +553,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         items = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
+            starts_from=starts_from,
+            starts_before=starts_before,
             limit=limit,
             offset=offset,
             order_by=order_by,
@@ -560,6 +579,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 limit=limit,
                 offset=offset,
                 favorite=favorite,
+                starts_from=starts_from,
+                starts_before=starts_before,
                 order_by=order_by,
                 provider=provider,
                 genre=genre,
@@ -1531,6 +1552,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self,
             favorite: bool | None = None,
             search: str | None = None,
+            starts_from: str | None = None,
+            starts_before: str | None = None,
             limit: int = 500,
             offset: int = 0,
             order_by: str | None = None,
@@ -1552,6 +1575,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self,
             favorite: bool | None = None,
             search: str | None = None,
+            starts_from: str | None = None,
+            starts_before: str | None = None,
             limit: int = 500,
             offset: int = 0,
             order_by: str | None = None,
@@ -1573,6 +1598,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self,
             favorite: bool | None = None,
             search: str | None = None,
+            starts_from: str | None = None,
+            starts_before: str | None = None,
             limit: int = 500,
             offset: int = 0,
             order_by: str | None = None,
@@ -1594,6 +1621,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self,
         favorite: bool | None = None,
         search: str | None = None,
+        starts_from: str | None = None,
+        starts_before: str | None = None,
         limit: int = 500,
         offset: int = 0,
         order_by: str | None = None,
@@ -1623,6 +1652,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 join_parts=join_parts,
                 favorite=favorite,
                 search=search if not collapse_collections else None,
+                starts_from=starts_from,
+                starts_before=starts_before,
                 genre_ids=genre_ids,
                 provider_filter=provider_filter,
                 played_only=played_only,
@@ -1638,6 +1669,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 query_params=query_params,
                 favorite=favorite,
                 search=search if not collapse_collections else None,
+                starts_from=starts_from,
+                starts_before=starts_before,
+                order_by=order_by,
                 genre_ids=genre_ids,
                 provider_filter=provider_filter,
                 played_only=played_only,
@@ -1914,6 +1948,38 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return search_name_match_clause(self.db_table, search, "search", query_params)
 
     @final
+    def _letter_bound_clause(
+        self,
+        letter_value: str,
+        order_by: str | None,
+        query_params: dict[str, Any],
+        below: bool = False,
+    ) -> str:
+        """
+        Return the SQL WHERE clause fragment that bounds a listing at a letter.
+
+        :param letter_value: The letter to bound at.
+        :param order_by: The ordering this query will use, which decides which name column
+            the letter is compared against.
+        :param query_params: Query params dict; the clause's bound params are added to it.
+        :param below: Keep what sorts below the letter, instead of what sorts at or above it.
+        :raises ValueError: If the letter is not a single ASCII letter.
+        """
+        letter = letter_value.lower()
+        if len(letter) != 1 or not ("a" <= letter <= "z"):
+            msg = f"a letter bound must be a single letter, got {letter_value!r}"
+            raise ValueError(msg)
+        # follow the ordering's own column, or the jump would land somewhere the list does
+        # not agree with: sorted by sort name, "The Beatles" is filed under B, not under T
+        name_column = "search_name" if order_by in ("name", "name_desc") else "search_sort_name"
+        column = f"{self.db_table}.{name_column}"
+        # an open-ended bound rather than LIKE 'x%': the items on the far side of the letter
+        # are what make this a jump instead of a filter, and it still seeks into the index
+        param = "starts_before" if below else "starts_from"
+        query_params[param] = letter
+        return f"{column} < :{param}" if below else f"{column} >= :{param}"
+
+    @final
     def _preprocess_search(self, search: str | None) -> str | None:
         """Normalize the search string for use in the search filter clauses."""
         return create_safe_string(search, True, True) if search else search
@@ -1946,6 +2012,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         genre_ids: list[int] | None,
         provider_filter: list[str] | None,
         order_by: str | None,
+        starts_from: str | None = None,
+        starts_before: str | None = None,
         played_only: bool = False,
         limit: int = 500,
         in_library_only: bool = False,
@@ -1961,6 +2029,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             query_params=query_params,
             favorite=favorite,
             search=search,
+            starts_from=starts_from,
+            starts_before=starts_before,
+            order_by=order_by,
             genre_ids=genre_ids,
             provider_filter=provider_filter,
             played_only=played_only,
@@ -1986,7 +2057,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         join_parts.clear()
 
     @final
-    def _apply_filters(
+    def _apply_filters(  # noqa: PLR0913
         self,
         query_parts: list[str],
         query_params: dict[str, Any],
@@ -1994,6 +2065,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search: str | None,
         genre_ids: list[int] | None,
         provider_filter: list[str] | None,
+        starts_from: str | None = None,
+        starts_before: str | None = None,
+        order_by: str | None = None,
         played_only: bool = False,
         in_library_only: bool = False,
         reachable_via: list[str] | None = None,
@@ -2002,6 +2076,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # handle search
         if search:
             query_parts.append(self._search_filter_clause(search, query_params))
+        # handle the first-letter jump, and the walk back up out of one
+        if starts_from:
+            query_parts.append(self._letter_bound_clause(starts_from, order_by, query_params))
+        if starts_before:
+            query_parts.append(
+                self._letter_bound_clause(starts_before, order_by, query_params, below=True)
+            )
         # handle favorite filter
         if favorite is not None:
             query_parts.append(f"{self.db_table}.favorite = :favorite")

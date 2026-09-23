@@ -75,10 +75,12 @@ class PodcastsController(MediaControllerBase[Podcast]):
             FROM podcasts"""
         return query, {}
 
-    async def library_items(
+    async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,
+        starts_from: str | None = None,
+        starts_before: str | None = None,
         limit: int = 500,
         offset: int = 0,
         order_by: str = "sort_name",
@@ -112,6 +114,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
+            starts_from=starts_from,
+            starts_before=starts_before,
             genre_ids=genre,
             limit=limit,
             offset=offset,
