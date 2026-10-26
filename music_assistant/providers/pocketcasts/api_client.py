@@ -136,12 +136,19 @@ class PocketCastsClient:
         return episodes
 
     async def get_up_next_episodes(self) -> list[dict[str, Any]]:
-        """Return the Up Next queue episodes."""
-        data = await self._request("POST", f"{API_BASE_URL}/up_next/list")
+        """Return the Up Next queue episodes, in queue order."""
+        # showPlayStatus asks the server to include playingStatus/playedUpTo per episode, which
+        # saves a separate in-progress lookup when resolving resume points for the queue.
+        data = await self._request(
+            "POST",
+            f"{API_BASE_URL}/up_next/list",
+            json={"version": 2, "model": "webplayer", "serverModified": 0, "showPlayStatus": True},
+        )
         episodes = data.get("episodes", [])
         # the up_next endpoint returns a uuid-keyed map; normalise to a list carrying the uuid
         if isinstance(episodes, dict):
-            return [{"uuid": uuid, **episode} for uuid, episode in episodes.items()]
+            episodes = [{"uuid": uuid, **episode} for uuid, episode in episodes.items()]
+        self.logger.debug("Retrieved %d Up Next episodes", len(episodes))
         return cast("list[dict[str, Any]]", episodes)
 
     async def get_new_releases(self) -> list[dict[str, Any]]:
@@ -297,6 +304,8 @@ class PocketCastsClient:
         :param url: The episode audio URL.
         :param published: The episode publish date (ISO format), optional.
         """
+        # Pocket Casts stores the queue as full entries rather than references, so a uuid on
+        # its own is rejected - the title and audio url have to travel with it.
         episode: dict[str, Any] = {
             "uuid": episode_uuid,
             "podcast": podcast_uuid,
